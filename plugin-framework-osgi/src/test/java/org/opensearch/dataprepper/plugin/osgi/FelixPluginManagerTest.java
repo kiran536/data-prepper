@@ -225,6 +225,25 @@ class FelixPluginManagerTest {
     }
 
     @Test
+    void startup_does_not_purge_directories_that_only_share_the_cache_name_prefix() throws Exception {
+        System.setProperty(FelixPluginManager.DATA_PREPPER_DIR_PROPERTY, tempDir.getAbsolutePath());
+        final File osgiDir = new File(tempDir, "data" + File.separator + "osgi");
+        // Purging matches felix-cache-<pid>. A directory whose name merely starts with the cache name
+        // is not one this class created, so startup must leave it alone.
+        final File unrelated = new File(osgiDir, FelixPluginManager.CACHE_DIR_NAME + "-backup");
+        assertThat("Test setup should create the unrelated directory", unrelated.mkdirs(), is(true));
+        final File keptFile = new File(unrelated, "keep.txt");
+        assertThat("Test setup should create a file inside the unrelated directory",
+                keptFile.createNewFile(), is(true));
+
+        felixPluginManager = new FelixPluginManager();
+        felixPluginManager.start();
+
+        assertThat("A directory that is not a felix-cache-<pid> must not be deleted at startup",
+                keptFile.exists(), is(true));
+    }
+
+    @Test
     void default_cache_dir_falls_back_to_tmpdir_when_data_prepper_dir_not_set() throws Exception {
         System.clearProperty(FelixPluginManager.DATA_PREPPER_DIR_PROPERTY);
 

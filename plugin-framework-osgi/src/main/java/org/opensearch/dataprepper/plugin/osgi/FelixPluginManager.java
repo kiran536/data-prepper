@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
@@ -29,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -41,6 +43,13 @@ public class FelixPluginManager implements AutoCloseable {
 
     static final String DATA_PREPPER_DIR_PROPERTY = "data-prepper.dir";
     static final String CACHE_DIR_NAME = "felix-cache";
+
+    /**
+     * Matches only the {@code felix-cache-<pid>} directories earlier versions of this class created,
+     * so that purging cannot reach a directory this class never owned.
+     */
+    private static final Pattern STALE_CACHE_DIR_PATTERN =
+            Pattern.compile(Pattern.quote(CACHE_DIR_NAME) + "-\\d+");
 
     private final Framework framework;
 
@@ -213,18 +222,28 @@ public class FelixPluginManager implements AutoCloseable {
     /**
      * Deletes process-suffixed bundle caches ({@code felix-cache-<pid>}) orphaned by earlier versions
      * that named the cache per process. Best-effort: a cache we cannot remove is logged and skipped.
+     * <p>
+     * Deletion is deliberately narrow, because {@code data-prepper.dir} is caller-supplied and this
+     * runs at startup. A candidate is removed only when all of the following hold, so that no path
+     * outside the caches this class itself created can be reached:
+     * <ul>
+     *   <li>it is a direct child of {@code <data-prepper.dir>/data/osgi};</li>
+     *   <li>its name matches {@code felix-cache-<digits>} exactly — not merely the prefix, so an
+     *       unrelated directory such as {@code felix-cache-backup} is left alone;</li>
+     *   <li>it is a real directory rather than a symbolic link, so a link planted under the OSGi
+     *       directory cannot redirect the walk outside of it.</li>
+     * </ul>
      */
     private static void purgeStaleCaches(final Path osgiDir) {
-        if (!Files.isDirectory(osgiDir)) {
+        if (!Files.isDirectory(osgiDir, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
         try (Stream<Path> children = Files.list(osgiDir)) {
             final List<Path> stale = children
-                    .filter(Files::isDirectory)
-                    .filter(path -> path.getFileName().toString().startsWith(CACHE_DIR_NAME + "-"))
+                    .filter(FelixPluginManager::isStaleProcessSuffixedCache)
                     .collect(Collectors.toList());
             for (final Path staleCache : stale) {
-                deleteRecursively(staleCache);
+                deleteRecursively(osgiDir, staleCache);
             }
             if (!stale.isEmpty()) {
                 LOG.info("Removed {} stale Felix OSGi bundle cache directories under {}", stale.size(), osgiDir);
@@ -234,7 +253,22 @@ public class FelixPluginManager implements AutoCloseable {
         }
     }
 
-    private static void deleteRecursively(final Path root) {
+    private static boolean isStaleProcessSuffixedCache(final Path candidate) {
+        return Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS)
+                && STALE_CACHE_DIR_PATTERN.matcher(candidate.getFileName().toString()).matches();
+    }
+
+    /**
+     * Recursively deletes {@code root}, refusing anything that is not a direct child of
+     * {@code osgiDir} and skipping symbolic links rather than following them.
+     */
+    private static void deleteRecursively(final Path osgiDir, final Path root) {
+        if (!osgiDir.equals(root.getParent())) {
+            LOG.warn("Refusing to delete {}: it is not directly under {}", root, osgiDir);
+            return;
+        }
+        // Files.walk does not follow symbolic links unless FOLLOW_LINKS is passed, and the caller has
+        // already established that root itself is not a link, so the walk cannot escape root.
         try (Stream<Path> paths = Files.walk(root)) {
             final List<Path> ordered = paths.sorted(Comparator.reverseOrder()).collect(Collectors.toList());
             for (final Path path : ordered) {

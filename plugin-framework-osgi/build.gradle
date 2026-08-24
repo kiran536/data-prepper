@@ -10,49 +10,26 @@
 
 plugins {
     id 'data-prepper.publish'
-    id 'biz.aQute.bnd.builder'
 }
 
 group = 'org.opensearch.dataprepper.core'
 
-jar {
-    bundle {
-        bnd '''\
-            Bundle-SymbolicName: org.opensearch.dataprepper.plugin.osgi
-            Export-Package: org.opensearch.dataprepper.plugin.osgi
-            Import-Package: \
-                org.opensearch.dataprepper.model.annotations,\
-                org.opensearch.dataprepper.model.source,\
-                org.opensearch.dataprepper.model.buffer,\
-                org.opensearch.dataprepper.model.processor,\
-                org.opensearch.dataprepper.model.sink,\
-                org.opensearch.dataprepper.model.plugin,\
-                org.opensearch.dataprepper.model.configuration,\
-                org.opensearch.dataprepper.model.event,\
-                org.opensearch.dataprepper.model.record,\
-                org.opensearch.dataprepper.plugin,\
-                org.apache.felix.framework,\
-                org.osgi.framework;version="[1.10,2)",\
-                org.osgi.framework.launch;version="[1.2,2)",\
-                org.osgi.framework.wiring;version="[1.2,2)",\
-                io.micrometer.core.instrument,\
-                org.slf4j;version="[2.0,3)",\
-                *;resolution:=optional
-        '''
-    }
-}
+// This module is the OSGi *host*: data-prepper-core depends on it as a runtimeOnly library and it
+// is never installed as a bundle. Bundles reach org.opensearch.dataprepper.plugin.osgi through
+// FRAMEWORK_SYSTEMPACKAGES_EXTRA (see DataPrepperOsgiPackages), not through a bundle manifest, so
+// this JAR deliberately carries no OSGi headers and the build applies no bundling plugin.
 
 dependencies {
     implementation project(':data-prepper-api')
     implementation project(':data-prepper-plugin-framework')
+    // The only third-party runtime dependency this module adds to the repository. Every other
+    // coordinate below is already used at the same version elsewhere in Data Prepper.
     implementation libs.felix.framework
     implementation libs.slf4j.api
     implementation 'io.micrometer:micrometer-core'
     implementation 'javax.inject:javax.inject:1'
     implementation 'javax.annotation:javax.annotation-api:1.3.2'
     testImplementation project(':data-prepper-test:test-data-prepper-version')
-    testImplementation 'ch.qos.logback:logback-classic:1.5.16'
-    testImplementation 'io.micrometer:micrometer-test'
 }
 
 // ===========================================================================
@@ -98,13 +75,17 @@ dependencies {
     integrationTestImplementation project(':data-prepper-test:plugin-test-framework')
     integrationTestImplementation libs.spring.context
     integrationTestImplementation libs.spring.core
-    integrationTestImplementation 'javax.inject:javax.inject:1'
-    integrationTestImplementation 'javax.annotation:javax.annotation-api:1.3.2'
-    integrationTestImplementation 'org.osgi:osgi.core:8.0.0'
+    // No osgi.core dependency: the OSGi core API (org.osgi.framework.*, including FrameworkUtil and
+    // BundleReference, which this source set uses) is contained in the Felix framework JAR, which
+    // reaches this classpath through implementation -> testImplementation -> integrationTestImplementation.
 }
 
 // Copy the osgi-test-plugin bundle JAR to a known location before integration tests run.
-task stageOsgiBundles(type: Copy) {
+// Sync rather than Copy, so the staging directory holds exactly the current bundle. A Copy
+// leaves behind JARs built under an earlier project version, and the integration test points
+// the framework at this whole directory: every stale JAR would be installed as a second bundle
+// registering the same plugin name, and which one wins the lookup is not deterministic.
+task stageOsgiBundles(type: Sync) {
     from configurations.osgiBundleJar
     into layout.buildDirectory.dir('osgi-bundles-staging')
 }
@@ -180,19 +161,3 @@ task generateSharedPackagesResource {
 // Wire generated resources into the main source set so they are on the classpath.
 sourceSets.main.resources.srcDir(generateSharedPackagesResource)
 
-task validateBundle {
-    dependsOn jar
-    doLast {
-        def jarFile = jar.archiveFile.get().asFile
-        def jarFileObj = new java.util.jar.JarFile(jarFile)
-        def manifest = jarFileObj.manifest
-        def symbolicName = manifest.mainAttributes.getValue('Bundle-SymbolicName')
-        if (symbolicName == null || symbolicName.isEmpty()) {
-            throw new GradleException("Bundle-SymbolicName is missing from ${jarFile.name}")
-        }
-        logger.lifecycle("Bundle validation passed: ${symbolicName}")
-        jarFileObj.close()
-    }
-}
-
-check.dependsOn validateBundle

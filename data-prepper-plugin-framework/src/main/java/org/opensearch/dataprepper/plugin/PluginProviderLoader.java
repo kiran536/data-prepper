@@ -46,11 +46,15 @@ public class PluginProviderLoader {
      * Registers an additional PluginProvider at runtime.
      * Used by the OSGi integration to inject the OsgiPluginRegistry.
      * <p>
-     * Providers may be registered after this loader is constructed and after
-     * {@link DefaultPluginFactory} is constructed. That is safe only because
-     * {@code DefaultPluginFactory} re-reads {@link #getPluginProviders()} on every plugin lookup
-     * rather than snapshotting the collection; do not reintroduce a snapshot without also
-     * introducing a Spring ordering edge that forces registration to complete first.
+     * Providers may be registered after this loader is constructed. Two independent mechanisms make
+     * that safe, and both should be kept:
+     * <ol>
+     *   <li>{@link DefaultPluginFactory} depends on {@link PluginProviderRegistrar}, which forces
+     *       Spring to complete the OSGi registration before the factory exists.</li>
+     *   <li>{@code DefaultPluginFactory} re-reads {@link #getPluginProviders()} on every plugin lookup
+     *       rather than snapshotting the collection, so a provider registered by any other means is
+     *       still picked up.</li>
+     * </ol>
      *
      * @param provider the provider to add
      */
@@ -68,8 +72,8 @@ public class PluginProviderLoader {
      * plugin registered under the same name.
      * <p>
      * The returned list is built fresh on every call, and {@code DefaultPluginFactory} re-reads it on every
-     * plugin lookup rather than snapshotting it. Do not reintroduce a snapshot in the caller without also
-     * introducing a Spring ordering edge that forces OSGi registration to complete before the first lookup.
+     * plugin lookup rather than snapshotting it. The ordering guarantee itself comes from the factory's
+     * dependency on {@link PluginProviderRegistrar}; the per-lookup re-read is defense in depth.
      *
      * @return the plugin providers to consult, registered (OSGi) providers first
      */

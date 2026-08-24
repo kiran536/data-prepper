@@ -24,7 +24,10 @@ import org.opensearch.dataprepper.event.DefaultEventFactory;
 import org.opensearch.dataprepper.model.acknowledgements.AcknowledgementSetManager;
 import org.opensearch.dataprepper.model.configuration.PipelinesDataFlowModel;
 import org.opensearch.dataprepper.model.configuration.PluginSetting;
+import org.opensearch.dataprepper.model.event.Event;
+import org.opensearch.dataprepper.model.event.JacksonEvent;
 import org.opensearch.dataprepper.model.processor.Processor;
+import org.opensearch.dataprepper.model.record.Record;
 import org.opensearch.dataprepper.pipeline.parser.DataPrepperDeserializationProblemHandler;
 import org.opensearch.dataprepper.plugin.DefaultPluginFactory;
 import org.opensearch.dataprepper.plugin.ExperimentalConfiguration;
@@ -38,6 +41,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import java.io.File;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.UUID;
 
@@ -280,7 +285,59 @@ class OsgiIT {
         assertThat("Bundle must be ACTIVE",
                 bundle.getState(), is(org.osgi.framework.Bundle.ACTIVE));
 
+        // OSGi permits several versions of one symbolic name to coexist, and each would register the
+        // same plugin name, leaving the winner of a lookup undefined. The bundles directory must
+        // therefore hold exactly one build of the test plugin: a stale JAR left there by an earlier
+        // project version would otherwise be installed too, and the assertions in these tests would
+        // silently be made against whichever copy happened to win.
+        final long sameSymbolicName = Arrays.stream(bundle.getBundleContext().getBundles())
+                .filter(installed -> bundle.getSymbolicName().equals(installed.getSymbolicName()))
+                .count();
+        assertThat("Exactly one build of the test plugin bundle may be installed",
+                sameSymbolicName, is(1L));
+
         LOG.info("=== OsgiIT: Bundle metadata verified ===");
+    }
+
+    @Test
+    void osgi_loaded_plugin_resolves_its_own_spi_service_through_the_managed_context_classloader() {
+        LOG.info("=== OsgiIT: Testing SPI resolution inside an OSGi-loaded plugin ===");
+
+        final DefaultPluginFactory pluginFactory = createDefaultPluginFactory();
+
+        final PluginSetting pluginSetting = new PluginSetting(TEST_PLUGIN_NAME, Collections.emptyMap());
+        pluginSetting.setPipelineName(pipelineName);
+
+        // osgi_test_echo's constructor calls ServiceLoader.load(OsgiTestGreetingProvider.class), the
+        // idiom that resolves against the thread context classloader. Its only provider is declared in
+        // the bundle's own META-INF/services, which no classloader outside the bundle can see, so
+        // construction succeeding with a real greeting is direct evidence that the framework scoped the
+        // context classloader to the bundle for plugin construction.
+        final Processor plugin = pluginFactory.loadPlugin(Processor.class, pluginSetting);
+        assertThat(plugin, notNullValue());
+
+        final Event event = JacksonEvent.builder()
+                .withEventType("event")
+                .withData(Collections.singletonMap("message", UUID.randomUUID().toString()))
+                .build();
+
+        @SuppressWarnings("unchecked")
+        final Collection<Record<Event>> results = plugin.execute(
+                Collections.singletonList(new Record<>(event)));
+
+        assertThat(results, notNullValue());
+        assertThat(results.size(), is(1));
+
+        // Both values are string literals rather than references to the plugin's own constants: those
+        // classes are deliberately absent from this test's classpath, which is the whole point of the
+        // OSGi isolation asserted above. They must stay in sync with OsgiTestEchoProcessor and
+        // BundleLocalGreetingProvider.
+        final Event resultEvent = results.iterator().next().getData();
+        assertThat("The plugin's SPI lookup must have found the provider inside its own bundle",
+                resultEvent.get("osgi_test_spi_greeting", String.class), is("greeting-from-bundle-spi"));
+        assertThat(resultEvent.get("osgi_test_spi_greeting", String.class), not(is("spi-lookup-failed")));
+
+        LOG.info("=== OsgiIT: SPI resolution through the bundle classloader verified ===");
     }
 
     @Test

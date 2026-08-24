@@ -13,6 +13,7 @@ package org.opensearch.dataprepper.plugin.osgi;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
 import org.opensearch.dataprepper.plugin.PluginProviderLoader;
+import org.opensearch.dataprepper.plugin.PluginProviderRegistrar;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.BundleException;
 import org.slf4j.Logger;
@@ -40,9 +41,14 @@ import java.util.Optional;
  * (host packages only), which is valid for testing.
  * <p>
  * Activated only when {@code -Ddata-prepper.plugin.framework=osgi} is set.
+ * <p>
+ * This bean is the {@link PluginProviderRegistrar} for the OSGi framework.
+ * {@link org.opensearch.dataprepper.plugin.DefaultPluginFactory} depends on that interface, so Spring
+ * must run {@link #initialize()} to completion before the plugin factory — and therefore any pipeline
+ * construction — exists.
  */
 @Named
-public class OsgiFrameworkRunner {
+public class OsgiFrameworkRunner implements PluginProviderRegistrar {
     private static final Logger LOG = LoggerFactory.getLogger(OsgiFrameworkRunner.class);
     static final String PLUGIN_FRAMEWORK_PROPERTY = "data-prepper.plugin.framework";
     static final String BUNDLES_DIR_PROPERTY = "data-prepper.plugin.bundles.dir";
@@ -54,6 +60,7 @@ public class OsgiFrameworkRunner {
     private FelixPluginManager felixPluginManager;
     private OsgiPluginRegistry osgiPluginRegistry;
     private BundleHealthCheck bundleHealthCheck;
+    private volatile boolean pluginProviderRegistrationComplete;
 
     /**
      * @param pluginProviderLoader the loader the OSGi plugin registry is registered into
@@ -83,6 +90,7 @@ public class OsgiFrameworkRunner {
         if (!osgiEnabled) {
             LOG.debug("OSGi plugin framework is not enabled. Set -D{}={} to enable.",
                     PLUGIN_FRAMEWORK_PROPERTY, MODE_OSGI);
+            pluginProviderRegistrationComplete = true;
             return;
         }
 
@@ -91,6 +99,7 @@ public class OsgiFrameworkRunner {
             loadBundles();
             registerPluginProvider();
             bundleHealthCheck = new BundleHealthCheck(felixPluginManager.getBundleContext());
+            pluginProviderRegistrationComplete = true;
             LOG.info("OSGi plugin framework initialized successfully");
         } catch (final BundleException e) {
             throw new RuntimeException("Failed to start OSGi framework. Aborting startup.", e);
@@ -133,6 +142,17 @@ public class OsgiFrameworkRunner {
     private void registerPluginProvider() {
         osgiPluginRegistry = new OsgiPluginRegistry(felixPluginManager.getBundleContext());
         pluginProviderLoader.registerProvider(osgiPluginRegistry);
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Registration is reported complete once {@link #initialize()} has finished, including when OSGi
+     * mode is disabled and there is consequently nothing to register.
+     */
+    @Override
+    public boolean isPluginProviderRegistrationComplete() {
+        return pluginProviderRegistrationComplete;
     }
 
     /**

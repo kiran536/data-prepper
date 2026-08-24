@@ -140,6 +140,37 @@ class StaticBundleLoaderTest {
     }
 
     @Test
+    void loadBundles_from_directory_skips_sources_and_javadoc_jars_alongside_a_real_bundle() throws Exception {
+        createValidBundleInDir("sidecar-bundle", "1.0.0");
+        // Gradle and Maven publish these next to the real artifact. They are plain JARs with no OSGi
+        // manifest, so treating them as bundle candidates would fail startup even though the real
+        // bundle is present.
+        createAuxiliaryJar("sidecar-bundle-1.0.0-sources.jar");
+        createAuxiliaryJar("sidecar-bundle-1.0.0-javadoc.jar");
+        // Suffix matching must be case insensitive. The distinct base name keeps this a separate file
+        // on case-insensitive filesystems.
+        createAuxiliaryJar("OtherArtifact-1.0.0-JAVADOC.JAR");
+
+        final List<Bundle> result = loader.loadBundles(tempDir);
+
+        assertThat(result.size(), is(1));
+        assertThat(result.get(0).getSymbolicName(), is("test.sidecar-bundle"));
+        assertThat(result.get(0).getState(), is(Bundle.ACTIVE));
+    }
+
+    @Test
+    void loadBundles_from_directory_still_rejects_a_non_auxiliary_jar_without_an_osgi_manifest() throws Exception {
+        createValidBundleInDir("strict-bundle", "1.0.0");
+        createLegacyJar("some-transitive-dependency");
+
+        final BundleLoadException ex = assertThrows(BundleLoadException.class,
+                () -> loader.loadBundles(tempDir));
+
+        assertThat(ex.getMessage(), containsString("some-transitive-dependency.jar"));
+        assertThat(ex.getMessage(), containsString("not an OSGi bundle"));
+    }
+
+    @Test
     void loadBundles_with_unresolvable_bundle_throws_with_translated_message() throws Exception {
         // Create a bundle that imports a non-existent package
         final File jar = createUnresolvableBundle("bad-import-bundle");
@@ -245,6 +276,21 @@ class StaticBundleLoaderTest {
         final Manifest manifest = new Manifest();
         manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
         // No Bundle-SymbolicName — this is a legacy/plain JAR, not an OSGi bundle
+        try (JarOutputStream jos = new JarOutputStream(new FileOutputStream(jar), manifest)) {
+            // Empty JAR with just a manifest
+        }
+        return jar;
+    }
+
+    /**
+     * Writes a plain JAR under the exact file name given, with no OSGi manifest headers. Used to
+     * simulate the {@code -sources.jar} / {@code -javadoc.jar} artifacts a build publishes alongside
+     * the real bundle.
+     */
+    private File createAuxiliaryJar(final String fileName) throws IOException {
+        final File jar = new File(tempDir, fileName);
+        final Manifest manifest = new Manifest();
+        manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
         try (JarOutputStream jos = new JarOutputStream(new FileOutputStream(jar), manifest)) {
             // Empty JAR with just a manifest
         }

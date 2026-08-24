@@ -74,9 +74,11 @@ class DefaultPluginFactoryTest {
     private PluginConfigObservable pluginConfigObservable;
     private ApplicationContextToTypedSuppliers applicationContextToTypedSuppliers;
     private List<Consumer<DefinedPlugin<?>>> definedPluginConsumers;
+    private Optional<PluginProviderRegistrar> pluginProviderRegistrar;
 
     @BeforeEach
     void setUp() {
+        pluginProviderRegistrar = Optional.empty();
         pluginProviderLoader = mock(PluginProviderLoader.class);
         pluginCreator = mock(PluginCreator.class);
         pluginConfigurationConverter = mock(PluginConfigurationConverter.class);
@@ -113,7 +115,8 @@ class DefaultPluginFactoryTest {
                 beanFactoryProvider,
                 pluginConfigurationObservableFactory,
                 applicationContextToTypedSuppliers,
-                definedPluginConsumers);
+                definedPluginConsumers,
+                pluginProviderRegistrar);
     }
 
     @Test
@@ -139,7 +142,51 @@ class DefaultPluginFactoryTest {
         assertThat(actualException.getMessage(),
                 containsString("missing the org.opensearch.dataprepper.plugin.PluginProvider file"));
         assertThat(actualException.getMessage(),
+                containsString("No PluginProviderRegistrar is present in this application context"));
+    }
+
+    @Test
+    void loadPlugin_should_report_a_completed_registrar_that_registered_nothing_as_a_bundle_failure() {
+        final PluginProviderRegistrar registrar = mock(PluginProviderRegistrar.class);
+        given(registrar.isPluginProviderRegistrationComplete()).willReturn(true);
+        pluginProviderRegistrar = Optional.of(registrar);
+        given(pluginProviderLoader.getPluginProviders()).willReturn(Collections.emptyList());
+
+        final DefaultPluginFactory objectUnderTest = createObjectUnderTest();
+        final PluginSetting pluginSetting = new PluginSetting("test", Collections.emptyMap());
+        pluginSetting.setPipelineName("pipeline");
+
+        final RuntimeException actualException = assertThrows(RuntimeException.class,
+                () -> objectUnderTest.loadPlugin(Processor.class, pluginSetting));
+
+        assertThat(actualException.getMessage(),
+                containsString("finished starting but registered no plugin provider"));
+    }
+
+    @Test
+    void loadPlugin_should_report_an_incomplete_registrar_as_a_framework_still_starting() {
+        final PluginProviderRegistrar registrar = mock(PluginProviderRegistrar.class);
+        given(registrar.isPluginProviderRegistrationComplete()).willReturn(false);
+        pluginProviderRegistrar = Optional.of(registrar);
+        given(pluginProviderLoader.getPluginProviders()).willReturn(Collections.emptyList());
+
+        final DefaultPluginFactory objectUnderTest = createObjectUnderTest();
+        final PluginSetting pluginSetting = new PluginSetting("test", Collections.emptyMap());
+        pluginSetting.setPipelineName("pipeline");
+
+        final RuntimeException actualException = assertThrows(RuntimeException.class,
+                () -> objectUnderTest.loadPlugin(Processor.class, pluginSetting));
+
+        assertThat(actualException.getMessage(),
                 containsString("the OSGi framework has not finished starting"));
+    }
+
+    @Test
+    void constructor_should_throw_if_pluginProviderRegistrar_is_null() {
+        pluginProviderRegistrar = null;
+
+        assertThrows(NullPointerException.class,
+                this::createObjectUnderTest);
     }
 
     @Test

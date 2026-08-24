@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -55,6 +56,15 @@ final class StaticBundleLoader {
 
     private static final String FRAGMENT_HOST_HEADER = "Fragment-Host";
 
+    /**
+     * Maven/Gradle publish these alongside the real artifact using the same base name. They are never
+     * bundles, so they are skipped instead of failing the fail-fast manifest check — otherwise pointing
+     * {@code data-prepper.plugin.bundles.dir} at an ordinary artifact directory aborts startup even when
+     * the real bundle is present. Any other JAR without an OSGi manifest is still rejected, since that
+     * is a misbuilt plugin rather than a build by-product.
+     */
+    private static final List<String> AUXILIARY_JAR_SUFFIXES = Arrays.asList("-sources.jar", "-javadoc.jar");
+
     static final String METRIC_BUNDLES_LOADED = "osgi.plugin.bundlesLoaded";
     static final String METRIC_BUNDLES_FAILED = "osgi.plugin.bundlesFailed";
     static final String METRIC_RESOLUTION_DURATION = "osgi.plugin.resolutionDuration";
@@ -78,7 +88,8 @@ final class StaticBundleLoader {
     }
 
     /**
-     * Installs, resolves, and starts all bundle JARs found in the given directory.
+     * Installs, resolves, and starts all bundle JARs found in the given directory. Build by-products
+     * which are never bundles — see {@link #AUXILIARY_JAR_SUFFIXES} — are skipped.
      * On any resolution or activation failure, throws with a translated diagnostic message.
      *
      * @param bundlesDir the directory containing bundle JAR files
@@ -91,7 +102,7 @@ final class StaticBundleLoader {
             throw new BundleLoadException("Bundle directory does not exist or is not a directory: " + bundlesDir);
         }
 
-        final File[] jarFiles = bundlesDir.listFiles((dir, name) -> name.endsWith(".jar"));
+        final File[] jarFiles = bundlesDir.listFiles((dir, name) -> isBundleCandidate(name));
         if (jarFiles == null || jarFiles.length == 0) {
             LOG.info("No bundle JARs found in {}", bundlesDir);
             logStartupSummary(Collections.emptyList());
@@ -99,6 +110,27 @@ final class StaticBundleLoader {
         }
 
         return loadBundles(Arrays.asList(jarFiles));
+    }
+
+    /**
+     * Returns whether a file in the bundles directory should be treated as a candidate bundle.
+     *
+     * @param fileName the file name to test
+     * @return true for JARs other than the auxiliary artifacts a build publishes alongside a bundle
+     */
+    private static boolean isBundleCandidate(final String fileName) {
+        final String lowerCaseFileName = fileName.toLowerCase(Locale.ROOT);
+        if (!lowerCaseFileName.endsWith(".jar")) {
+            return false;
+        }
+
+        for (final String auxiliarySuffix : AUXILIARY_JAR_SUFFIXES) {
+            if (lowerCaseFileName.endsWith(auxiliarySuffix)) {
+                LOG.debug("Skipping auxiliary JAR which is not a plugin bundle: {}", fileName);
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

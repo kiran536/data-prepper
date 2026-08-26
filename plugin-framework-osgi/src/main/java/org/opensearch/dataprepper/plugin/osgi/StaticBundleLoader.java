@@ -167,9 +167,7 @@ final class StaticBundleLoader {
             bundlesFailedCounter.increment(unresolved.size());
             logStartupSummary(installed);
             final String errorMessages = unresolved.stream()
-                    .map(b -> BundleResolutionErrorTranslator.translateMessage(
-                            b.getSymbolicName(),
-                            "Bundle state is " + getStateString(b.getState()) + " (not RESOLVED)"))
+                    .map(this::describeResolutionFailure)
                     .collect(Collectors.joining("; "));
             throw new BundleLoadException("Bundle resolution failed: " + errorMessages);
         }
@@ -238,7 +236,31 @@ final class StaticBundleLoader {
         if (frameworkWiring == null) {
             throw new BundleLoadException("Cannot obtain FrameworkWiring from system bundle");
         }
-        frameworkWiring.resolveBundles(bundles);
+        if (!frameworkWiring.resolveBundles(bundles)) {
+            LOG.warn("The OSGi framework could not resolve every plugin bundle. "
+                    + "The unsatisfied requirements are reported per bundle below.");
+        }
+    }
+
+    /**
+     * Explains why a bundle did not resolve. {@code FrameworkWiring.resolveBundles} reports only a
+     * boolean, and the bundle state alone ("INSTALLED") says nothing about which requirement went
+     * unsatisfied. Starting the bundle re-runs resolution and surfaces that detail as a
+     * {@link BundleException}, which the translator turns into an actionable message. The start
+     * cannot succeed here — the bundle is known to be unresolved — so this only reads the error.
+     */
+    private String describeResolutionFailure(final Bundle bundle) {
+        // A fragment cannot be started, so starting it would report that instead of the real cause.
+        if (bundle.getHeaders().get(FRAGMENT_HOST_HEADER) == null) {
+            try {
+                bundle.start();
+            } catch (final BundleException e) {
+                return BundleResolutionErrorTranslator.translate(bundle.getSymbolicName(), e);
+            }
+        }
+        return BundleResolutionErrorTranslator.translateMessage(
+                bundle.getSymbolicName(),
+                "Bundle state is " + getStateString(bundle.getState()) + " (not RESOLVED)");
     }
 
     private List<Bundle> startBundles(final List<Bundle> bundles) {

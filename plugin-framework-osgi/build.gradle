@@ -120,6 +120,39 @@ task generateSharedPackagesResource {
     def outputDir = layout.buildDirectory.dir('generated-resources/osgi-packages')
     inputs.dir(apiSourceDir)
     inputs.property("apiVersion", project(':data-prepper-api').version)
+
+    // Third-party packages that cross the host/plugin boundary, mapped to the module that supplies
+    // each one. They must be exported WITH a version: an export carrying no version attribute
+    // defaults to 0.0.0 and therefore satisfies none of the version ranges bnd computes for a
+    // plugin bundle (for example com.fasterxml.jackson.annotation;version="[2.21,3)"), so every
+    // real plugin would fail to resolve at startup. Versions are read from the versions actually
+    // resolved for this build rather than hardcoded, so they cannot drift out of those ranges.
+    def thirdPartyPackageModules = [
+            'com.fasterxml.jackson.annotation': 'com.fasterxml.jackson.core:jackson-annotations',
+            'jakarta.validation'              : 'jakarta.validation:jakarta.validation-api',
+            'jakarta.validation.constraints'  : 'jakarta.validation:jakarta.validation-api',
+            // slf4j-api splits the logger API (org.slf4j) from the provider SPI (org.slf4j.spi).
+            // SLF4J 2.x bytecode references the SPI, so bnd adds it to the imports of virtually any
+            // plugin that logs; org.slf4j alone is not enough. org.slf4j itself is exported by
+            // DataPrepperOsgiPackages.SLF4J_PACKAGE.
+            'org.slf4j.spi'                   : 'org.slf4j:slf4j-api',
+    ]
+    def thirdPartyExports = providers.provider {
+        def resolvedVersions = configurations.runtimeClasspath.resolvedConfiguration
+                .lenientConfiguration.allModuleDependencies
+                .collectEntries { [("${it.moduleGroup}:${it.moduleName}".toString()): it.moduleVersion] }
+        thirdPartyPackageModules.collect { packageName, module ->
+            def resolvedVersion = resolvedVersions[module]
+            if (resolvedVersion == null) {
+                throw new GradleException("Cannot resolve a version for ${module}, which supplies the " +
+                        "'${packageName}' package exported to OSGi bundles. Add it to this project's " +
+                        "runtime classpath or remove it from thirdPartyPackageModules.")
+            }
+            "${packageName};version=\"${resolvedVersion}\""
+        }.join(',')
+    }
+    inputs.property("thirdPartyExports", thirdPartyExports)
+
     outputs.dir(outputDir)
     doLast {
         def dir = outputDir.get().asFile
@@ -152,8 +185,8 @@ task generateSharedPackagesResource {
         sb.append("# Lists packages from data-prepper-api shared with OSGi bundles.\n")
         sb.append("# Rule: org.opensearch.dataprepper.* except org.opensearch.dataprepper.plugins.*\n")
         sb.append("data-prepper.packages=${packages.join(',')}\n")
-        // Third-party packages shared across the host/plugin boundary
-        sb.append("third-party.packages=com.fasterxml.jackson.annotation,jakarta.validation,jakarta.validation.constraints\n")
+        // Third-party packages shared across the host/plugin boundary, each with its resolved version
+        sb.append("third-party.packages=${thirdPartyExports.get()}\n")
         packagesFile.text = sb.toString()
     }
 }

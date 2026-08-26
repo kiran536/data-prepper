@@ -70,33 +70,61 @@ class DataPrepperOsgiPackagesTest {
         }
     }
 
+    /**
+     * Third-party entries are export clauses such as {@code jakarta.validation;version="3.1.1"},
+     * so an exact-equality check would not find the package they export.
+     */
+    private boolean exportsPackage(final List<String> exportClauses, final String packageName) {
+        return exportClauses.stream()
+                .anyMatch(clause -> clause.equals(packageName) || clause.startsWith(packageName + ";"));
+    }
+
     @Test
     void loadThirdPartyPackages_includes_jackson_annotation() {
         final List<String> packages = DataPrepperOsgiPackages.loadThirdPartyPackages();
-        assertTrue(packages.contains("com.fasterxml.jackson.annotation"),
+        assertTrue(exportsPackage(packages, "com.fasterxml.jackson.annotation"),
                 "Should include Jackson annotation package");
     }
 
     @Test
     void loadThirdPartyPackages_includes_jakarta_validation() {
         final List<String> packages = DataPrepperOsgiPackages.loadThirdPartyPackages();
-        assertTrue(packages.contains("jakarta.validation"),
+        assertTrue(exportsPackage(packages, "jakarta.validation"),
                 "Should include jakarta.validation");
-        assertTrue(packages.contains("jakarta.validation.constraints"),
+        assertTrue(exportsPackage(packages, "jakarta.validation.constraints"),
                 "Should include jakarta.validation.constraints");
+    }
+
+    @Test
+    void loadThirdPartyPackages_includes_slf4j_spi() {
+        final List<String> packages = DataPrepperOsgiPackages.loadThirdPartyPackages();
+        assertTrue(exportsPackage(packages, "org.slf4j.spi"),
+                "Should include org.slf4j.spi, which SLF4J 2.x bytecode makes an import of nearly "
+                        + "every logging plugin");
+    }
+
+    @Test
+    void loadThirdPartyPackages_are_all_versioned() {
+        final List<String> packages = DataPrepperOsgiPackages.loadThirdPartyPackages();
+        assertFalse(packages.isEmpty(), "Should load third-party packages from generated resource");
+        for (final String clause : packages) {
+            assertThat("An export with no version defaults to 0.0.0 and satisfies no version range, "
+                            + "so no plugin importing it could resolve: " + clause,
+                    clause, containsString(";version=\""));
+        }
     }
 
     @Test
     void loadThirdPartyPackages_does_not_include_jackson_databind() {
         final List<String> packages = DataPrepperOsgiPackages.loadThirdPartyPackages();
-        assertFalse(packages.contains("com.fasterxml.jackson.databind"),
+        assertFalse(exportsPackage(packages, "com.fasterxml.jackson.databind"),
                 "Should NOT include jackson databind");
     }
 
     @Test
     void loadThirdPartyPackages_does_not_include_jackson_core() {
         final List<String> packages = DataPrepperOsgiPackages.loadThirdPartyPackages();
-        assertFalse(packages.contains("com.fasterxml.jackson.core"),
+        assertFalse(exportsPackage(packages, "com.fasterxml.jackson.core"),
                 "Should NOT include jackson core");
     }
 
@@ -133,6 +161,23 @@ class DataPrepperOsgiPackagesTest {
         final String result = DataPrepperOsgiPackages.buildSystemPackagesExtra();
         assertThat(result, containsString("jakarta.validation"));
         assertThat(result, containsString("jakarta.validation.constraints"));
+    }
+
+    @Test
+    void buildSystemPackagesExtra_contains_slf4j_spi() {
+        final String result = DataPrepperOsgiPackages.buildSystemPackagesExtra();
+        assertThat(result, containsString("org.slf4j.spi"));
+    }
+
+    @Test
+    void buildSystemPackagesExtra_exports_third_party_packages_with_their_versions() {
+        final String result = DataPrepperOsgiPackages.buildSystemPackagesExtra();
+
+        for (final String clause : DataPrepperOsgiPackages.loadThirdPartyPackages()) {
+            assertThat("The version attribute must survive into the exported system packages, "
+                            + "otherwise the export defaults to 0.0.0 and no plugin resolves",
+                    result, containsString(clause));
+        }
     }
 
     @Test
